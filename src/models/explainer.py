@@ -38,7 +38,6 @@ class DiscountExplainer:
         try:
             if self.explainer is not None:
                 x_row = row[feature_names].values.reshape(1, -1).astype(float)
-                # For isolation forest, negative shap values lower the score (outlier), positive raise it (inlier)
                 shap_vals = self.explainer.shap_values(x_row)[0]
                 # Invert so positive attribution means contributing towards anomaly
                 inv_shap = -shap_vals
@@ -50,31 +49,40 @@ class DiscountExplainer:
             
         # 2. Plain-English translation engine based on feature values
         price = row.get('price', 0.0)
-        pre_sale_inf = row.get('pre_sale_inflation_pct', 0.0)
+        recent_inf = row.get('recent_peak_inflation_ratio', row.get('pre_sale_inflation_pct', 0.0))
+        drop_peak = row.get('drop_from_recent_peak', 0.0)
+        exagg_gap = row.get('discount_exaggeration_gap', 0.0)
+        creep_slope = row.get('creeping_inflation_slope', 0.0)
+        fake_idx = row.get('fake_discount_illusion_index', 0.0)
         dev_30 = row.get('dev_from_30d_mean', 0.0)
-        vol_ratio = row.get('volatility_ratio', 1.0)
         z_score = row.get('z_score', 0.0)
         
-        if pre_sale_inf > 0.08:
-            reasons.append(f"Price was artificially inflated in the weeks prior to this discount (+{pre_sale_inf*100:.1f}% above 30-day baseline).")
+        if recent_inf > 0.15:
+            reasons.append(f"Price was artificially inflated by +{recent_inf*100:.1f}% above historical baseline in the preceding 14 days.")
             
-        if abs(dev_30) < 0.05 and risk_score > 0.5:
-            reasons.append(f"Current 'sale price' (${price:.2f}) is within {abs(dev_30)*100:.1f}% of the normal 30-day average — no genuine saving.")
+        if fake_idx > 0.05 and drop_peak > 0.15:
+            reasons.append(f"Manufactured sale pattern detected: advertised {drop_peak*100:.1f}% discount merely cancels out pre-sale inflation.")
+            
+        if creep_slope > 0.05:
+            reasons.append("Creeping inflation pattern: price was gradually climbed upwards over multiple days prior to this sudden drop.")
+            
+        if exagg_gap > 0.15:
+            reasons.append(f"Advertised discount is exaggerated by {exagg_gap*100:.1f}% compared to real savings against the 30-day baseline.")
+            
+        if abs(dev_30) < 0.08 and risk_score > 0.5:
+            reasons.append(f"Current 'sale price' (${price:.2f}) is essentially equal to the 30-day normal price ({dev_30*100:+.1f}%) — zero genuine consumer savings.")
         elif dev_30 > 0.10:
             reasons.append(f"Current advertised price is actually +{dev_30*100:.1f}% HIGHER than the product's 30-day historical average.")
             
-        if vol_ratio > 1.8:
-            reasons.append(f"Price exhibits erratic short-term volatility ({vol_ratio:.1f}x higher than normal product variation).")
-            
         if abs(z_score) > 2.0:
-            reasons.append(f"Spike magnitude is {abs(z_score):.1f}σ above normal price variation (statistical outlier).")
+            reasons.append(f"Price deviation exceeds statistical norms ({abs(z_score):.1f}σ from mean).")
             
         # Fallback / summary reason
         if not reasons:
             if risk_score > 0.5:
-                reasons.append("Multi-day pricing pattern strongly matches synthetic fraud benchmarks (subtle anomaly detected).")
+                reasons.append("Multi-day pricing pattern strongly matches deceptive discount benchmarks.")
             else:
-                reasons.append("Pricing pattern is consistent with genuine discounts (within normal historical baseline variation).")
+                reasons.append("Pricing pattern is consistent with genuine discounts within historical baseline variation.")
                 
         # 3. Determine final verdict badge and confidence
         if risk_score > 0.75:

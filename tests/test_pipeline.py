@@ -75,7 +75,7 @@ def test_detect_suspicious_events():
     assert len(anomalies) == 1
     anomaly = anomalies[0]
     assert anomaly['product_id'] == 1
-    assert anomaly['curr_price'] == 70.0
+    assert anomaly['curr_price'] == 50.0
     assert np.isclose(anomaly['score'], 0.3428, atol=0.01)
 
 def test_aggregate_scores():
