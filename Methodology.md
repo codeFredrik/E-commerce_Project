@@ -1,333 +1,149 @@
-# Detailed Methodology: Pricing Manipulation Detection
+# Methodology: Explainable Deceptive Pricing Detection
 
-## Table of Contents
-1. [Problem Definition](#problem-definition)
-2. [Detection Approaches](#detection-approaches)
-3. [Feature Engineering](#feature-engineering)
-4. [Threshold Selection](#threshold-selection)
-5. [Scoring System](#scoring-system)
-6. [Limitations & Edge Cases](#limitations--edge-cases)
+## 1. Problem Formulation & The Deceptive Discount Phenomenon
+
+In modern e-commerce marketplaces, deceptive pricing schemes frequently exploit consumer cognitive biases through **manufactured reference pricing** (often referred to as "fake discounts" or "was/now manipulation").
+
+```
+Price ($)
+  |                  [Artificial Peak]
+  |                     /‾‾‾‾‾‾\
+  |                    /        \   <- Advertised "40% Sale!"
+  |                   /          \__________
+  |  ────────────────/                      \───────── [True 30-Day Median Baseline]
+  |____________________________________________________
+                                    Drop Day (t)
+```
+
+A merchant artificially elevates a product's price for a brief period (e.g., 1–4 days) or gradually climbs it upwards ("creeping inflation") prior to a promotional event. On sale day $t$, the price is dropped back to or near the normal historical baseline. Although marketed as a deep discount (e.g., "30%–50% OFF!"), the consumer receives **zero genuine savings** relative to the product's historical price.
+
+### Objective
+Given a discrete time series of price observations $P = \{(t_i, p_i)\}_{i=1}^N$ per product $k$, determine for each promotional drop day $t$:
+1. **Classification:** Whether the discount is **Manufactured / Deceptive** or **Genuine**.
+2. **Quantification:** A calibrated fraud risk score $S_t \in [0.0, 1.0]$.
+3. **Attribution:** Plain-English, legally defensible explanations grounded in SHAP (SHapley Additive exPlanations).
 
 ---
 
-## Problem Definition
+## 2. Causal Feature Engineering Architecture
 
-### What is Pricing Manipulation?
+Standard anomaly detection features fail on the fraudulent sale drop day $t$ because the price returns near normal baseline values ($p_t \approx \text{baseline}$), yielding near-zero z-scores and normal moving averages.
 
-Pricing manipulation in e-commerce typically manifests as:
+Our system solves this via **Sale-Day Risk Transfer**: projecting pre-sale inflation window statistics directly onto drop day $t$ using strictly causal (past-looking) temporal aggregations:
 
-1. **Fake Discounts (Spike+Drop)**
-   - Artificially inflate price
-   - Quickly reduce to "original" level
-   - Customer perceives large discount that doesn't exist
-   - Example: $50 → $65 → $40 (appears as -38% off, but true manipulation)
+### 1. Robust Baseline & Rolling Extremes
+* **30-Day Median Baseline ($\tilde{M}_{30, t}$):**
+  $$\tilde{M}_{30, t} = \text{median}(p_{t-29}, \dots, p_t)$$
+  Provides a breakdown-resistant baseline that prevents short pre-sale price spikes from contaminating the reference level.
+* **14-Day Preceding Peak Price ($P^{\max}_{14, t}$):**
+  $$P^{\max}_{14, t} = \max(p_{t-14}, \dots, p_{t-1})$$
+  Excludes today's price $p_t$ to strictly preserve causality.
 
-2. **Artificial Scarcity**
-   - Rapid price fluctuations
-   - Creates urgency without real supply changes
+### 2. Pre-Sale Inflation & Illusion Indices
+* **Recent Peak Inflation Ratio ($R_{\text{infl}, t}$):**
+  $$R_{\text{infl}, t} = \frac{P^{\max}_{14, t} - \tilde{M}_{30, t}}{\tilde{M}_{30, t} + \epsilon}$$
+  Measures the degree to which the recent 14-day peak exceeded the true 30-day baseline.
 
-3. **Seasonal Manipulation**
-   - Systematic pattern during peak seasons
-   - Detected through aggregation (multiple events)
+* **Drop from Recent Peak ($D_{\text{peak}, t}$):**
+  $$D_{\text{peak}, t} = \frac{P^{\max}_{14, t} - p_t}{P^{\max}_{14, t} + \epsilon}$$
+  Captures the advertised discount depth relative to the manufactured reference peak.
 
-### Why Detect It?
+* **Fake Discount Illusion Index ($I_{\text{illusion}, t}$):**
+  $$I_{\text{illusion}, t} = \max(0, R_{\text{infl}, t}) \times \max(0, D_{\text{peak}, t})$$
+  Evaluates to high values **only** when an advertised price drop directly offsets an artificial pre-sale price surge.
 
-- **Consumer Protection**: Prevent deceptive pricing
-- **Platform Trust**: Maintain marketplace credibility
-- **Regulatory Compliance**: Meet FTC/consumer protection laws
-- **Competitive Fairness**: Level playing field for honest sellers
+* **Deceptive Discount Signal ($S_{\text{deceptive}, t}$):**
+  $$S_{\text{deceptive}, t} = I_{\text{illusion}, t} \times \text{clip}\left(\frac{p_{t-1} - p_t}{0.06 \cdot p_{t-1}}, 0.0, 1.0\right)$$
+  Sharpens signal activation specifically onto promotional drop days, suppressing post-sale stationary noise.
 
----
+### 3. Creeping Inflation Slope ($C_{\text{slope}, t}$)
+Detects multi-day stealth price increases (+3% to +5%/day over 7–10 days) preceding a drop:
+$$C_{\text{slope}, t} = \left( \sum_{k=1}^7 \max\left(0, \frac{p_{t-k} - p_{t-k-1}}{p_{t-k-1}}\right) \right) \times \max(0, D_{\text{peak}, t})$$
 
-## Detection Approaches
-
-### Approach 1: Basic Pattern Matching
-
-#### Concept
-Detect the classic spike+drop pattern in consecutive prices.
-
-#### Algorithm
-```
-For each product (chronologically sorted):
-  For each middle price point i (where 1 ≤ i < n-1):
-    
-    prev_price = price[i-1]
-    curr_price = price[i]
-    next_price = price[i+1]
-    
-    spike_ratio = curr_price / prev_price
-    drop_ratio = next_price / curr_price
-    
-    IF spike_ratio > 1.25 AND drop_ratio < 0.75:
-      flag as suspicious
-```
-
-#### Why These Thresholds?
-
-- **1.25 (25% spike)**: 
-  - Balances sensitivity vs specificity
-  - Distinguishes real spikes from natural variation (<10% typical)
-  - Too high (>1.5): Misses moderate manipulation
-  - Too low (<1.2): Too many false positives
-
-- **0.75 (25% drop)**:
-  - Symmetric with spike threshold
-  - Indicates price returned below spike point (manipulation signature)
-  - Less than 25% drop: Could be normal correction
-
-#### Strengths ✅
-- **Interpretable**: Simple rule, easy to explain
-- **Fast**: Single pass through data
-- **No Training**: No ML model needed
-- **Robust to Outliers**: Only looks at 3-point windows
-
-#### Weaknesses ❌
-- **Noise Sensitive**: Natural variation can trigger false alarms
-- **Context Blind**: Doesn't know baseline behavior
-- **Rigid**: Fixed thresholds don't adapt to product volatility
-- **Limited Coverage**: Only catches spike+drop; misses other patterns
+### 4. Advertised vs. Real Discount Gap ($G_{\text{gap}, t}$)
+When explicit advertised discounts are provided:
+$$G_{\text{gap}, t} = \max\left(0, \frac{\text{Discount\%}}{100} - \frac{\tilde{M}_{30, t} - p_t}{\tilde{M}_{30, t} + \epsilon}\right)$$
+Quantifies the divergence between advertised savings and actual savings against historical market baseline.
 
 ---
 
-### Approach 2: Statistical Anomaly Detection
+## 3. Unsupervised Model & Calibration (`DiscountIsolationForest`)
 
-#### Concept
-Use product baseline behavior + statistical outlier detection.
+### Decoupled Soft Domain Gating
+Traditional heuristic-coupled systems impose rigid rule cutoffs on ML predictions. Our `DiscountIsolationForest` avoids this coupling. The tree ensemble splits natively on continuous feature interactions:
+* $X_t = [S_{\text{deceptive}, t}, R_{\text{infl}, t}, C_{\text{slope}, t}, G_{\text{gap}, t}]$
 
-#### Features Engineered
+A minimal physical domain gate verifies only that day $t$ represents an actual discount drop below the preceding peak:
+$$\text{IsDiscountDrop}_t = (p_{t-1} - p_t \ge 0.08 \cdot p_{t-1}) \land (p_t < P^{\max}_{14, t})$$
 
-**1. Rolling Mean (5-period)**
-```
-rolling_mean[i] = mean(price[i-4:i+1])
-```
-- Captures short-term baseline
-- Smooths day-to-day noise
-- 5-period chosen as balance between responsiveness and smoothing
-
-**2. Smoothed Price (3-period)**
-```
-smoothed[i] = mean(price[i-2:i+1])
-```
-- Reduces high-frequency noise
-- Simpler moving average
-- 3-period: Minimal lag while filtering noise
-
-**3. Z-Score (Statistical Deviation)**
-```
-z_score[i] = (price[i] - mean(product_prices)) / std(product_prices)
-```
-- Measures how far price deviates from product average
-- Unit: standard deviations (σ)
-- |z| > 2: Unusual (95% of normal data falls within ±2σ)
-- |z| > 3: Very unusual (99.7% within ±3σ)
-
-#### Detection Logic
-
-```
-For each product (chronologically sorted):
-  For each price point i:
-    
-    baseline = rolling_mean[i]
-    smoothed = smoothed_price[i]
-    deviation = z_score[i]
-    
-    # Pattern-based detection
-    spike = smoothed > baseline * 1.3
-    drop = price[i+1] < price[i] * 0.75
-    pattern_detected = spike AND drop
-    
-    # Statistical detection
-    statistical_anomaly = abs(deviation) > 2
-    
-    IF pattern_detected OR statistical_anomaly:
-      flag as suspicious
-      score = base_score + 0.2 * (1 if statistical_anomaly else 0)
-```
-
-#### Why These Thresholds?
-
-- **1.3 (30% above baseline)**:
-  - More aggressive than basic (1.25)
-  - 30% deviation unusual for same product
-  - Indicates manipulation vs normal variation
-
-- **z_score > 2**:
-  - Statistical standard (95% confidence)
-  - Customizable but 2 is industry default
-  - Catches true outliers, not everyday variation
-
-#### Strengths ✅
-- **Adaptive**: Baseline adjusts per product
-- **Statistically Grounded**: Uses real deviation metrics
-- **Detects Isolated Anomalies**: Even without drop pattern
-- **Reduces False Positives**: Baseline comparison is contextual
-
-#### Weaknesses ❌
-- **Requires History**: Needs multiple prices per product
-- **Complex**: Harder to explain than basic method
-- **Parameter Sensitivity**: Changes to thresholds affect results significantly
+### Quantile-Anchored Sigmoid Calibration
+Raw Isolation Forest decision scores $\phi(x) = - \text{score\_samples}(x)$ are mapped to human-interpretable $[0.0, 1.0]$ probabilities via distribution-anchored sigmoid calibration:
+$$\mu_{\text{norm}} = \text{percentile}(\phi, 50), \quad \sigma_{\text{spread}} = \max(\text{percentile}(\phi, 95) - \mu_{\text{norm}}, 10^{-4})$$
+$$\theta_{\text{thresh}} = \mu_{\text{norm}} + 0.95 \cdot \sigma_{\text{spread}}$$
+$$P(\text{Deceptive} \mid X_t) = \frac{1}{1 + \exp\left(-30 \cdot (\phi_{\text{gated}}(X_t) - \theta_{\text{thresh}})\right)}$$
 
 ---
 
-## Feature Engineering
+## 4. Benchmark Validation & Detection Progression
 
-### Data Validation Pipeline
+We evaluated naive rules, engineered rules, and our decoupled Isolation Forest model on a diverse 3,000-observation benchmark (50 products, 60 days) featuring four injected manipulation archetypes alongside genuine discount controls:
 
-```
-Raw Data
-  ↓
-1. Check required columns exist
-2. Remove rows with missing values
-3. Convert dates to datetime
-4. Remove negative/zero prices
-5. Group by product_id
-  ↓
-Validated Data
-```
+### Archetype Coverage
+1. **Type 1: Classic 1-Day Spike & Drop** (+40% for 1 day $\rightarrow$ drop to baseline).
+2. **Type 2: Multi-Day Plateau** (+35% for 4 days $\rightarrow$ drop to baseline).
+3. **Type 3: Creeping Inflation** (+3.5%/day over 7 days $\rightarrow$ advertised 20% sale).
+4. **Type 4: Subtle Low-Volatility Manipulation** (+14% inflation on steady goods $\rightarrow$ drop).
+5. **Control: Genuine Deep Discount** (-20% to -25% discount with zero prior inflation).
 
-**Safe Z-Score Calculation**
-```python
-def safe_zscore(x):
-    """Handles constant price (std=0) gracefully"""
-    std = x.std()
-    if std > 0:
-        return (x - x.mean()) / std
-    else:
-        return pd.Series(0, index=x.index)  # No variation = no anomaly
-```
+### Benchmark Results
 
-Why needed?
-- If product has identical prices for all dates: std = 0
-- Without safeguard: Division by zero → NaN → errors
-- With safeguard: Returns 0 (makes sense: no deviation)
+#### 1. Strict Day-$t$ Matching Table
+| Detection Method | Precision | Recall | F1-Score | Accuracy | Confusion Matrix `[TN, FP] / [FN, TP]` | Archetypes Caught |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Rule-Based (Basic)** | **100.0%** | **25.0%** | **40.00%** | 99.0% | `[2960, 0] / [30, 10]` | Classic 1-day spike only |
+| **Rule-Based (Advanced)** | **100.0%** | **77.5%** | **87.32%** | 99.7% | `[2960, 0] / [9, 31]` | Classic spikes, 4-day plateaus, creeping inflation |
+| **Isolation Forest (ML)** | **93.02%** | **100.0%** | **96.39%** | **99.9%** | `[2957, 3] / [0, 40]` | **All 4 fraud patterns** (including subtle manipulation) |
+
+#### 2. Event-Level Tolerance Window ($\pm 2$ Days)
+| Detection Method | Event Precision | Event Recall | Event F1-Score |
+| :--- | :---: | :---: | :---: |
+| **Rule-Based (Basic)** | 100.0% | 25.0% | **40.00%** |
+| **Rule-Based (Advanced)** | 100.0% | 77.5% | **87.32%** |
+| **Isolation Forest (ML)** | 93.02% | 100.0% | **96.39%** |
+
+> **Progression Insight:**
+> **Basic Rules (40.0% F1)** capture only immediate 1-day jumps. **Advanced Rules (87.3% F1)** capture multi-day plateaus and creeping patterns, but miss subtle +14% manipulation due to rigid >18% cutoffs. **Isolation Forest ML (96.4% F1)** detects all manipulation types by capturing continuous multivariate anomalies relative to local product variance.
 
 ---
 
-## Threshold Selection
+## 5. Production Dataset Evaluation (`amazon_sales_dataset.csv`)
 
-### Why These Specific Values?
-
-#### Spike Threshold: 1.25 (Basic) vs 1.3 (Advanced)
-
-| Threshold | Detection Rate | False Positives | Use Case |
-|-----------|----------------|-----------------|----------|
-| 1.10      | Very High      | Excessive       | Too sensitive |
-| 1.15      | High           | High            | Catch subtle |
-| **1.25**  | **Balanced**   | **Moderate**    | **Basic method** |
-| 1.30      | Balanced       | Low             | Advanced (with baseline) |
-| 1.50      | Low            | Very Low        | Conservative |
-| 2.00+     | Very Low       | Minimal         | Only extreme spikes |
-
-#### Drop Threshold: 0.75 (25% below spike)
-
-- Symmetric to spike: If up 25%, down 25% completes the manipulation
-- 0.80 (20% drop): Too lenient, catches normal corrections
-- 0.70 (30% drop): Too strict, misses subtle manipulation
-- **0.75**: Goldilocks point
-
-#### Z-Score Threshold: 2.0
-
-- Statistical standard: 2σ = 95% confidence interval
-- 1.5: Too permissive (catches 87% of data)
-- 2.0: Industry standard (catches 95% as normal)
-- 3.0: Too conservative (misses real anomalies)
-- **2.0**: Best practice
+Running the validated pipeline across **50,000 real-world sales transactions** (4,000 unique products) yielded:
+* **Total Transactions:** 50,000
+* **Unique Products:** 4,000
+* **Basic Rule Alerts:** 2,545 events across 1,985 products
+* **Advanced Rule Alerts:** 5,505 events across 2,985 products
+* **Isolation Forest High-Risk Alerts ($S_t > 0.50$):** **1,892 events** across 922 products
 
 ---
 
-## Scoring System
+## 6. Explainable AI (SHAP Translation Engine)
 
-### Event-Level Score
-
-Individual suspicious event gets a score based on magnitude:
+`DiscountExplainer` computes exact Shapley attributions using TreeExplainer on the Isolation Forest trees, decomposing the anomaly decision into human-readable evidence:
 
 ```
-increase_pct = min((current - previous) / previous, 1.0)
-drop_pct = min((current - next) / current, 1.0)
+[Observation: Sony WH-1000XM5 on Promotional Drop Day]
+Verdict:        🔴 LIKELY FAKE (99% Confidence, Peak Score: 0.9672)
+Risk Level:     HIGH
 
-event_score = (increase_pct + drop_pct) / 2
+SHAP Attributions:
+• Deceptive Discount Signal:     +0.6289
+• Recent Peak Inflation Ratio:   +0.2788
+• Creeping Inflation Slope:      -0.0279
+• Discount Exaggeration Gap:     -0.0643
+
+Plain-English Consumer Reasons:
+1. "Price was artificially inflated by +40.0% above historical baseline in the preceding 14 days."
+2. "Manufactured sale pattern detected: advertised 31.0% discount merely cancels out pre-sale inflation."
+3. "Current 'sale price' ($339.99) is essentially equal to the 30-day normal baseline ($349.99) — zero real savings."
 ```
-
-**Example:**
-- Price: $50 → $70 → $45
-- increase_pct = 20/50 = 0.40
-- drop_pct = 25/70 = 0.36
-- event_score = (0.40 + 0.36) / 2 = **0.38**
-
-**Interpretation:**
-- 0.0-0.3: Mild manipulation
-- 0.3-0.6: Moderate manipulation
-- 0.6-1.0: Severe manipulation
-
-### Product-Level Aggregation
-
-Multiple events per product → single risk score:
-
-```
-events_for_product = [0.35, 0.42, 0.38]
-
-avg_score = mean(events) = 0.38
-
-num_events = 3
-event_weight = 1 + log(3) / 3 = 1.366
-
-final_score = avg_score * event_weight = 0.52
-final_score = min(0.52, 1.0) = 0.52
-```
-
-**Why log weighting?**
-- Rewards **consistent** manipulation (multiple events)
-- Isolated anomalies stay moderate
-- Doesn't explode with many events
-
-### Risk Categorization
-
-```
-Score Range | Category    | Action
-------------|-------------|----------
-0.0 - 0.5   | 🟢 Low      | Monitor
-0.5 - 0.8   | 🟠 Moderate | Review
-0.8 - 1.0   | 🔴 High     | Investigate
-```
-
----
-
-## Limitations & Edge Cases
-
-### 1. Constant Prices
-```
-Product with price [50, 50, 50, 50]
-z_score = undefined (std = 0)
-```
-**Solution:** Return 0 (no variation = no anomaly)
-
-### 2. Insufficient Data
-```
-Product with only 2 price points
-```
-**Solution:** Skip (need at least 3 for spike+drop pattern)
-
-### 3. Legitimate Seasonal Spikes
-```
-Example: Winter heating oil prices
-- Natural 20-30% spikes seasonally
-- Algorithm may flag as manipulation
-```
-**Mitigation:** Review business context; consider seasonal adjustment
-
-### 4. Data Quality Issues
-```
-Example: Erroneous price entry ($5000 instead of $50)
-```
-**Mitigation:** Outliers may be data errors; always validate
-
-### 5. Cross-Product Contamination (FIXED)
-```
-Product A: [10, 11, 12]
-Product B: [13, 14, 15]
-```
-**Fixed:** Group by product_id first, compare within groups only
-
----
-
-**Last Updated:** 2026-04-07

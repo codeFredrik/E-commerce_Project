@@ -25,3 +25,4 @@ class ProductClassifyResponse(BaseModel):
 class BenchmarkResponse(BaseModel):
     metrics_table: List[Dict[str, Any]]
     dataset_summary: Dict[str, Any]
+    window_metrics_table: Optional[List[Dict[str, Any]]] = None

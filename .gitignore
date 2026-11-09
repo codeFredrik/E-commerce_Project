@@ -29,7 +29,9 @@ MANIFEST
 *.csv
 *.xlsx
 *.xls
-data/
+data/*
+!data/ebay_cache/
+!data/ebay_cache/*.csv
 *.db
 
 # IDE

@@ -4,27 +4,33 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import List, Dict, Any, Optional
 
-def plot_product_analysis(df: pd.DataFrame, suspicious: List[Dict[str, Any]], product_id: int, explanations: Optional[List[Dict[str, Any]]] = None) -> go.Figure:
+def plot_product_analysis(
+    df: pd.DataFrame,
+    suspicious: List[Dict[str, Any]],
+    product_id: int,
+    explanations: Optional[List[Dict[str, Any]]] = None,
+    show_rules: bool = True
+) -> go.Figure:
     """
-    Visualizes price history, baselines, ML fraud risk trajectory, and SHAP plain-English tooltips using interactive Plotly.
+    Visualizes price history, 30-day baseline, ML fraud risk trajectory, and SHAP plain-English tooltips using interactive Plotly.
     """
     df_p = df[df['product_id'] == product_id].sort_values(by='order_date').copy()
-    
+
     if len(df_p) == 0:
         fig = go.Figure()
         fig.add_annotation(text=f'No data for Product {product_id}', showarrow=False, font=dict(size=16))
         return fig
-    
+
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True,
         vertical_spacing=0.08, row_heights=[0.50, 0.25, 0.25],
         subplot_titles=(
-            f'Product {product_id} — Price History, Baselines & Flagged Anomalies',
+            f'Product {product_id} — Price History, Baseline & Anomaly Flags',
             'AI Fraud Risk Score (Isolation Forest ML)',
-            'Statistical Deviation (Z-Score)'
+            'Statistical Deviation (Z-Score vs Normal Variation)'
         )
     )
-    
+
     # ===== ROW 1: MAIN PRICE CHART =====
     fig.add_trace(go.Scatter(
         x=df_p['order_date'], y=df_p['price'],
@@ -32,65 +38,72 @@ def plot_product_analysis(df: pd.DataFrame, suspicious: List[Dict[str, Any]], pr
         line=dict(color='#2B5B84', width=2.5),
         marker=dict(size=6, color='#2B5B84')
     ), row=1, col=1)
-                             
-    if 'rolling_mean_30' in df_p.columns:
+
+    # 30-Day Robust Median Baseline
+    if 'rolling_median_30' in df_p.columns:
         fig.add_trace(go.Scatter(
-            x=df_p['order_date'], y=df_p['rolling_mean_30'],
-            mode='lines', name='30-Period Baseline',
+            x=df_p['order_date'], y=df_p['rolling_median_30'],
+            mode='lines', name='30-Day Median Baseline',
             line=dict(color='#27AE60', width=2, dash='dash')
         ), row=1, col=1)
-                             
+    elif 'rolling_mean_30' in df_p.columns:
+        fig.add_trace(go.Scatter(
+            x=df_p['order_date'], y=df_p['rolling_mean_30'],
+            mode='lines', name='30-Day Mean Baseline',
+            line=dict(color='#27AE60', width=2, dash='dash')
+        ), row=1, col=1)
+
     if 'rolling_mean' in df_p.columns:
         fig.add_trace(go.Scatter(
             x=df_p['order_date'], y=df_p['rolling_mean'],
-            mode='lines', name='5-Period Rolling Mean',
+            mode='lines', name='5-Period Moving Average',
             line=dict(color='#E67E22', width=1.5, dash='dot')
         ), row=1, col=1)
-                             
+
     # Flagged Rule-Based Anomalies
-    susp_indices = [item['original_index'] for item in suspicious if item['product_id'] == product_id]
-    if susp_indices and 'original_index' in df_p.columns:
-        susp_rows = df_p[df_p['original_index'].isin(susp_indices)]
-        fig.add_trace(go.Scatter(
-            x=susp_rows['order_date'], y=susp_rows['price'],
-            mode='markers', name='Rule-Based Flag',
-            marker=dict(color='#C0392B', size=11, symbol='x', line=dict(width=2, color='#922B21'))
-        ), row=1, col=1)
-        
+    if show_rules:
+        susp_indices = [item['original_index'] for item in suspicious if item['product_id'] == product_id]
+        if susp_indices and 'original_index' in df_p.columns:
+            susp_rows = df_p[df_p['original_index'].isin(susp_indices)]
+            fig.add_trace(go.Scatter(
+                x=susp_rows['order_date'], y=susp_rows['price'],
+                mode='markers', name='Rule-Based Flag',
+                marker=dict(color='#C0392B', size=11, symbol='x', line=dict(width=2, color='#922B21'))
+            ), row=1, col=1)
+
     # Flagged ML Anomalies with SHAP Plain-English Tooltips
     if explanations and len(explanations) == len(df):
-        # Extract explanations for this product
         p_exps = [explanations[i] for i in df_p.index if i < len(explanations)]
         high_risk_dates = []
         high_risk_prices = []
         hover_texts = []
-        
+
         for idx_pos, exp in enumerate(p_exps):
             if exp.get('risk_score', 0.0) > 0.50:
                 high_risk_dates.append(df_p.iloc[idx_pos]['order_date'])
                 high_risk_prices.append(df_p.iloc[idx_pos]['price'])
                 reasons_str = "<br>• ".join(exp.get('reasons', ['Anomaly detected']))
                 hover_texts.append(f"<b>{exp.get('verdict', 'SUSPICIOUS')}</b> ({exp.get('confidence_pct', 0)}% Conf.)<br>• {reasons_str}")
-                
+
         if high_risk_dates:
             fig.add_trace(go.Scatter(
                 x=high_risk_dates, y=high_risk_prices,
-                mode='markers', name='AI ML Anomaly',
+                mode='markers', name='Isolation Forest (ML)',
                 text=hover_texts, hoverinfo='text',
                 marker=dict(color='#8E44AD', size=13, symbol='diamond', line=dict(width=2, color='#4A235A'))
             ), row=1, col=1)
-                                 
+
     # ===== ROW 2: ML RISK SCORE TRAJECTORY =====
     if explanations and len(explanations) == len(df):
         p_exps = [explanations[i] for i in df_p.index if i < len(explanations)]
         scores = [exp.get('risk_score', 0.0) for exp in p_exps]
         colors_ml = ['#C0392B' if s > 0.75 else ('#E67E22' if s > 0.50 else '#2ECC71') for s in scores]
-        
+
         fig.add_trace(go.Bar(
             x=df_p['order_date'], y=scores,
             marker_color=colors_ml, name='ML Risk Score'
         ), row=2, col=1)
-        
+
         fig.add_hline(y=0.50, line_dash="dash", line_color="#C0392B", line_width=1.5,
                       annotation_text="Fraud Threshold", row=2, col=1)
         fig.update_yaxes(range=[0.0, 1.05], title_text="Risk (0–1)", row=2, col=1)
@@ -104,7 +117,7 @@ def plot_product_analysis(df: pd.DataFrame, suspicious: List[Dict[str, Any]], pr
             x=df_p['order_date'], y=df_p['z_score'],
             marker_color=colors_z, name='Z-Score'
         ), row=3, col=1)
-                             
+
         fig.add_hline(y=2.0, line_dash="dash", line_color="#C0392B", line_width=1.5, annotation_text="+2σ", row=3, col=1)
         fig.add_hline(y=-2.0, line_dash="dash", line_color="#C0392B", line_width=1.5, annotation_text="-2σ", row=3, col=1)
         fig.add_hline(y=0, line_width=0.5, line_color="black", row=3, col=1)
@@ -119,5 +132,54 @@ def plot_product_analysis(df: pd.DataFrame, suspicious: List[Dict[str, Any]], pr
     fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#F2F4F4')
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#F2F4F4')
     fig.update_xaxes(title_text="Order Date", row=3, col=1)
-    
+
+    return fig
+
+
+def plot_shap_attributions(attributions: Dict[str, float]) -> go.Figure:
+    """
+    Renders an explainable SHAP feature attribution chart breaking down what drove the anomaly score.
+    """
+    if not attributions:
+        fig = go.Figure()
+        fig.add_annotation(text="No SHAP attributions available", showarrow=False)
+        return fig
+
+    FEATURE_LABELS = {
+        'deceptive_discount_signal': 'Deceptive Discount Signal (Illusion × Drop)',
+        'recent_peak_inflation_ratio': 'Pre-Sale 14d Peak Inflation Ratio',
+        'creeping_inflation_slope': 'Creeping Inflation Slope (7-day climb)',
+        'discount_exaggeration_gap': 'Discount Exaggeration Gap (Advertised vs Real)',
+        'fake_discount_illusion_index': 'Fake Discount Illusion Index',
+        'drop_from_recent_peak': 'Drop from Recent Peak',
+        'volatility_ratio': 'Short vs Long Volatility Ratio'
+    }
+
+    items = list(attributions.items())
+    # Sort by absolute attribution magnitude
+    items.sort(key=lambda x: abs(x[1]))
+
+    names = [FEATURE_LABELS.get(k, k.replace('_', ' ').title()) for k, _ in items]
+    values = [v for _, v in items]
+    colors = ['#E74C3C' if v > 0 else '#2ECC71' for v in values]
+
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=names,
+        orientation='h',
+        marker_color=colors,
+        text=[f"{v:+.3f}" for v in values],
+        textposition='outside'
+    ))
+
+    fig.update_layout(
+        title="SHAP Feature Attributions (Contribution to Fraud Risk Verdict)",
+        xaxis_title="Normalized SHAP Contribution (Positive = Toward Fake, Negative = Toward Genuine)",
+        yaxis_title="",
+        height=320,
+        margin=dict(l=20, r=40, t=50, b=30),
+        plot_bgcolor="white"
+    )
+    fig.add_vline(x=0, line_width=1, line_color="#7F8C8D")
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#F2F4F4')
     return fig
