@@ -10,7 +10,7 @@ An end-to-end, unsupervised machine learning and Explainable AI (XAI) system tha
 
 ---
 
-## 🔍 The Market Gap
+## The Market Gap
 
 | Existing Platform | Capability | Critical Limitation |
 | :--- | :--- | :--- |
@@ -21,7 +21,7 @@ An end-to-end, unsupervised machine learning and Explainable AI (XAI) system tha
 
 ---
 
-## 🏆 Benchmark Validation & Scientific Progression
+## Benchmark Validation & Scientific Progression
 
 We formally evaluate our system using a **Synthetic Fraud Injection Engine** (50 products, 60 days, 3,000 observations) featuring four distinct manipulation archetypes alongside genuine discount controls:
 
@@ -44,7 +44,7 @@ We formally evaluate our system using a **Synthetic Fraud Injection Engine** (50
 
 ---
 
-## 💡 Explainable AI Output (SHAP Translation)
+## Explainable AI Output (SHAP Translation)
 
 Rather than outputting an opaque float score, the system pairs TreeExplainer SHAP feature attributions with a domain translation engine:
 
@@ -65,7 +65,7 @@ SHAP Feature Attributions:
 
 ---
 
-## 🏛️ System Architecture
+## System Architecture
 
 ```
 Time Series Data (Amazon Kaggle / Curated Showcases / Live eBay API)
@@ -91,7 +91,7 @@ Time Series Data (Amazon Kaggle / Curated Showcases / Live eBay API)
 
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```text
 E-commerce_Project/
@@ -123,7 +123,7 @@ E-commerce_Project/
 
 ---
 
-## 🚀 Quickstart & Installation
+## Quickstart & Installation
 
 ### 1. Environment Setup
 ```bash
@@ -160,7 +160,7 @@ All 12 unit tests verify data validation, causal feature calculation, rule heuri
 
 ---
 
-## 📊 Real-World Dataset Performance
+## Real-World Dataset Performance
 
 Evaluated against the full **50,000 transactions** across **4,000 unique products** (`amazon_sales_dataset.csv`):
 * **Rule-Based (Basic):** Flagged 2,545 events across 1,985 products.
@@ -169,6 +169,6 @@ Evaluated against the full **50,000 transactions** across **4,000 unique product
 
 ---
 
-## 📜 Methodology & Mathematical Details
+## Methodology & Mathematical Details
 
 For complete mathematical definitions of $I_{\text{illusion}}$, $S_{\text{deceptive}}$, creeping inflation rolling sums, and quantile-anchored sigmoid calibration, consult [Methodology.md](./Methodology.md).
